@@ -45,3 +45,21 @@ def test_rows_have_category_configured_locations_and_incoming_po():
     assert rows[0]["Prekės kategorija"] == "Žaliavos"
     assert rows[0]["WH/Stock laisvas"] == 3.0
     assert rows[0]["Aktyviuose PO dar negauta"] == 7
+
+
+def test_resolves_location_name_and_default_buy_route():
+    client = FakeClient({
+        "stock.location": [{"id": 8, "complete_name": "WH/Stock"}],
+        "ir.model.data": [{"id": 20, "res_id": 7}],
+    })
+    configured = StockByLocationReport(
+        client,
+        StockReportSettings({"WH/Stock": None}),
+    )
+
+    assert configured.resolve_locations() == {"WH/Stock": 8}
+    assert configured.resolve_buy_route_ids() == frozenset({7})
+    assert client.search_calls == [
+        ("stock.location", [("complete_name", "=", "WH/Stock")]),
+        ("ir.model.data", [("module", "=", "purchase_stock"), ("name", "=", "route_warehouse0_buy")]),
+    ]

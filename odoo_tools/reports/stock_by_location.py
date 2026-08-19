@@ -12,8 +12,8 @@ from openpyxl.styles import Font
 
 @dataclass(frozen=True)
 class StockReportSettings:
-    locations: Mapping[str, int]
-    buy_route_ids: frozenset[int]
+    locations: Mapping[str, int | None]
+    buy_route_ids: frozenset[int] = frozenset()
     output_dir: Path = Path("output")
     output_prefix: str = "SKU_Stock_by_Location"
 
@@ -36,12 +36,14 @@ class StockByLocationReport:
         self.settings = settings
 
     def run(self) -> Path:
+        locations = self.resolve_locations()
+        buy_route_ids = self.resolve_buy_route_ids()
         products = self.load_products()
         categories = self.load_categories(products)
-        buy_ids = self.find_buy_product_ids(products, categories)
+        buy_ids = self.find_buy_product_ids(products, categories, buy_route_ids)
         balances = {
             name: self.load_location_balances(location_id)
-            for name, location_id in self.settings.locations.items()
+            for name, location_id in locations.items()
         }
         rows = self.build_rows(
             products,
@@ -51,6 +53,35 @@ class StockByLocationReport:
             self.load_active_po_remaining(products),
         )
         return self.export_to_excel(rows)
+
+    def resolve_locations(self) -> dict[str, int]:
+        resolved = {}
+        for name, configured_id in self.settings.locations.items():
+            if configured_id is not None:
+                resolved[name] = int(configured_id)
+                continue
+            ids = self.client.search("stock.location", [("complete_name", "=", name)])
+            if len(ids) != 1:
+                detail = "nerasta" if not ids else f"rastos {len(ids)}"
+                raise ValueError(
+                    f"Odoo lokacija '{name}' {detail}. Jei pavadinimas nėra unikalus, "
+                    "naudokite formatą Pavadinimas:ID."
+                )
+            resolved[name] = int(ids[0])
+        return resolved
+
+    def resolve_buy_route_ids(self) -> frozenset[int]:
+        if self.settings.buy_route_ids:
+            return self.settings.buy_route_ids
+        ids = self.client.search("ir.model.data", [
+            ("module", "=", "purchase_stock"),
+            ("name", "=", "route_warehouse0_buy"),
+        ])
+        records = self.client.read("ir.model.data", ids, ["res_id"])
+        route_ids = frozenset(int(row["res_id"]) for row in records if row.get("res_id"))
+        if not route_ids:
+            raise ValueError("Odoo pirkimo maršrutas nerastas; nustatykite BUY_ROUTE_IDS.")
+        return route_ids
 
     def load_products(self):
         ids = self.client.search("product.product", [
@@ -64,12 +95,13 @@ class StockByLocationReport:
         ids = sorted({self.many2one_id(p.get("categ_id")) for p in products} - {None})
         return self.read_map("product.category", ids, self.CATEGORY_FIELDS)
 
-    def find_buy_product_ids(self, products, categories):
+    def find_buy_product_ids(self, products, categories, buy_route_ids=None):
+        buy_route_ids = buy_route_ids or self.settings.buy_route_ids
         result = set()
         for product in products:
             category = categories.get(self.many2one_id(product.get("categ_id")) or 0, {})
             routes = set(map(int, product.get("route_ids") or [])) | set(map(int, category.get("route_ids") or []))
-            if routes & self.settings.buy_route_ids:
+            if routes & buy_route_ids:
                 result.add(int(product["id"]))
         return result
 
