@@ -7,6 +7,7 @@ from odoo_tools.bootstraps.sale_delivered_manual import (
     SERVER_ACTION_CODE,
     BootstrapError,
     install,
+    status,
     uninstall,
 )
 
@@ -51,7 +52,9 @@ class FakeClient:
 def test_install_is_idempotent_and_uninstall_removes_managed_action():
     client = FakeClient()
 
+    assert status(client) == {"state": "not_installed", "action_id": None}
     assert install(client) == 51
+    assert status(client) == {"state": "installed", "action_id": 51}
     assert client.action["name"] == ACTION_NAME
     assert client.action["code"] == SERVER_ACTION_CODE
     assert client.action["binding_model_id"] == 7
@@ -60,6 +63,7 @@ def test_install_is_idempotent_and_uninstall_removes_managed_action():
     assert uninstall(client) is True
     assert client.action is None
     assert client.xmlid is None
+    assert status(client) == {"state": "not_installed", "action_id": None}
     assert uninstall(client) is False
 
 
@@ -77,3 +81,15 @@ def test_uninstall_refuses_to_delete_modified_action():
 
     with pytest.raises(BootstrapError, match="refusing to delete"):
         uninstall(client)
+
+
+@patch.dict("os.environ", {"ODOO_BOOTSTRAP_CONFIRM": "DEPLOY_TEMPORARY_ODOO_BOOTSTRAP"})
+def test_status_reports_modified_action():
+    client = FakeClient()
+    install(client)
+    client.action["code"] = "changed"
+
+    result = status(client)
+
+    assert result["state"] == "modified"
+    assert result["action_id"] == 51
