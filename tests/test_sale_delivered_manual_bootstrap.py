@@ -41,7 +41,7 @@ class FakeClient:
             self.action.update(args[1])
             return True
         if model == "ir.actions.server" and method == "read":
-            return [{"name": self.action["name"], "code": self.action["code"]}]
+            return [{"name": self.action["name"], "code": self.action["code"], "binding_model_id": [self.action["binding_model_id"], "Sales Order Line"]}]
         if model == "ir.actions.server" and method == "unlink":
             self.action = None
             return True
