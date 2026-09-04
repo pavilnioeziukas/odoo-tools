@@ -79,8 +79,9 @@ class BootstrapClient:
         )
 
 
-def _require_explicit_write_confirmation() -> None:
-    if os.getenv("ODOO_BOOTSTRAP_CONFIRM", "") != WRITE_CONFIRMATION:
+def _require_explicit_write_confirmation(confirmation: str | None = None) -> None:
+    confirmation = confirmation or os.getenv("ODOO_BOOTSTRAP_CONFIRM", "")
+    if confirmation != WRITE_CONFIRMATION:
         raise BootstrapError(
             "Refusing to mutate Odoo. Set ODOO_BOOTSTRAP_CONFIRM="
             f"{WRITE_CONFIRMATION} for this command only."
@@ -114,9 +115,39 @@ def _find_xmlid(client: BootstrapClient) -> list[int]:
     )
 
 
-def install(client: BootstrapClient) -> int:
+def status(client: BootstrapClient) -> dict[str, object]:
+    """Return the live installation state without mutating Odoo."""
+    xmlid_ids = _find_xmlid(client)
+    if not xmlid_ids:
+        return {"state": "not_installed", "action_id": None}
+    if len(xmlid_ids) != 1:
+        return {"state": "modified", "action_id": None, "detail": "Duplicate managed XML IDs."}
+    metadata = client.execute(
+        "ir.model.data", "read", [xmlid_ids], {"fields": ["model", "res_id"]}
+    )[0]
+    if metadata["model"] != "ir.actions.server":
+        return {"state": "modified", "action_id": None, "detail": "Unexpected XML ID model."}
+    action_id = int(metadata["res_id"])
+    if not client.execute("ir.actions.server", "exists", [[action_id]]):
+        return {"state": "modified", "action_id": action_id, "detail": "Server action is missing."}
+    action = client.execute(
+        "ir.actions.server", "read", [[action_id]], {"fields": ["name", "code", "binding_model_id"]}
+    )[0]
+    expected_model_id = _single_id(client, "ir.model", [("model", "=", "sale.order.line")])
+    binding = action.get("binding_model_id")
+    binding_id = binding[0] if isinstance(binding, (list, tuple)) else binding
+    if (
+        action["name"] != ACTION_NAME
+        or action["code"].strip() != SERVER_ACTION_CODE.strip()
+        or binding_id != expected_model_id
+    ):
+        return {"state": "modified", "action_id": action_id, "detail": "Managed action differs from bootstrap."}
+    return {"state": "installed", "action_id": action_id}
+
+
+def install(client: BootstrapClient, confirmation: str | None = None) -> int:
     """Install or reconcile the temporary contextual server action."""
-    _require_explicit_write_confirmation()
+    _require_explicit_write_confirmation(confirmation)
     model_id = _single_id(client, "ir.model", [("model", "=", "sale.order.line")])
     xmlid_ids = _find_xmlid(client)
     if len(xmlid_ids) > 1:
@@ -162,9 +193,9 @@ def install(client: BootstrapClient) -> int:
     return action_id
 
 
-def uninstall(client: BootstrapClient) -> bool:
+def uninstall(client: BootstrapClient, confirmation: str | None = None) -> bool:
     """Remove only the server action owned by this bootstrap."""
-    _require_explicit_write_confirmation()
+    _require_explicit_write_confirmation(confirmation)
     xmlid_ids = _find_xmlid(client)
     if not xmlid_ids:
         return False
